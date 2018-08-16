@@ -1,0 +1,465 @@
+<dom-module id="file-input">
+	<style>
+		:host { 
+			width: 100%;
+			height: 100%;
+			font-size: 12px;
+			position: relative;
+            display: block;
+		}
+		input {
+			position: absolute;
+			top: 0;
+			left: 0;
+			width: 100%;
+			height: 100%;
+			opacity: 0;
+            cursor: pointer;
+		}
+	</style>
+
+	<template>		
+		<content select="*"></content>
+		<input id="fileInput" type="file" class="fileInput" name="{{name}}" on-change="changeHandler" title=" " />
+        <iron-ajax
+            id="fileUpload"
+            method="POST"
+            content-type="application/json"
+            url="{{url}}"
+            handle-as="json"
+            on-response="_handleResponse",
+            on-error="_handleErrorResponse"
+            loading="true"
+            on-request="_onRequest"
+            on-loading-changed="_onLoadingChanged"></iron-ajax>
+
+	</template>
+</dom-module>	
+
+
+<script>
+Polymer({
+	is: "file-input",
+	properties: {
+		accept : {
+			type: String,
+			observer : "setAccept"
+		},
+		minSize : {
+			type: Number,
+			value: 0
+		},
+
+        /*  File max size in bytes
+         * 
+         *  Default is 2mb
+         *
+         */
+		maxSize:{
+			type: Number,
+			value: 2000000
+		},
+		maxFiles: {
+			type: Number,
+			value: 0,
+			observer : "setMaxFiles"
+		},
+		directory: {
+			type: Boolean,
+			value: false,
+			observer: "setDirectory"
+		},
+		extensions: String,
+		camera : Boolean,
+		required: {
+            type : Boolean,
+            value: false
+        },
+        imagePreview: {
+            type: Boolean,
+            value: false
+        },
+        /* for auto upload parameters */
+        autoUpload: {
+            type: String,
+            value: "false",
+        },
+        name: {
+            type: String,
+            value: "fileUpload",
+        },
+        url: String,
+        params: {
+            type: Object,
+            value: function() { return {}; }
+        },
+        postparams: {
+            type: Object,
+            value: function() { return {}; }
+        },
+        response: {
+            type: Object,
+            notify: true,
+            value: function(){ return []; }
+        }
+
+	},
+	/*listeners: {
+		'change' : 'changeHandler'
+	},*/
+
+	ready: function() {
+		if (this.camera && this.isIos()) {
+            this.maxFiles = 1;
+
+            var iosCameraAccept = "image/*;capture=camera";
+            if (this.accept && this.accept.trim().length > 0) {
+                this.accept += "," + iosCameraAccept;
+            }
+            else {
+                this.accept = iosCameraAccept;
+            }
+        }
+
+        this.files = {};
+	},
+
+    attached: function() {
+        // this.cloneFileInput = this.$.fileInput.cloneNode(true);
+    },
+
+	isIos: function() {
+		return navigator.userAgent.indexOf("iPad") !== -1 || 
+			navigator.userAgent.indexOf("iPod") !== -1 ||
+			navigator.userAgent.indexOf("iPhone") !== -1;
+    },
+
+	setDirectory : function (val) {
+		var fileInput = this.$.fileInput;
+        if (val && fileInput.webkitdirectory !== undefined) {
+            fileInput.setAttribute("webkitdirectory", "");
+        }
+        else {
+            fileInput.removeAttribute("webkitdirectory");
+        }
+	},
+
+	setAccept: function(val) {
+		var fileInput = this.$.fileInput;
+        fileInput.setAttribute("accept", val);
+	},
+
+	setMaxFiles : function(val) {
+		var fileInput = this.$.fileInput;
+        // if (val !== 1) {
+        if (val > 1) {
+            fileInput.setAttribute("multiple", "");
+        }
+        else {
+            fileInput.removeAttribute("multiple");
+        }
+	},
+
+    setAutoUploadVar: function(val) {
+        this.autoUpload = (this.autoUpload === "true" || this.autoUpload === true) ? true : false;
+    },
+
+	getResultOfSizeValidation : function (files) {
+		var minSize = this.minSize, maxSize = this.maxSize
+
+        if (!minSize && !maxSize) {
+            return {tooBig: [], tooSmall: [], valid: files};
+        }
+
+        var valid = [],
+            tooBig = [],
+            tooSmall = [];
+
+        files.forEach(function(file) {
+            if (minSize && file.size < minSize) {
+                tooSmall.push(file);
+            }
+            else if (maxSize && file.size > maxSize) {
+                tooBig.push(file);
+            }
+            else {
+                valid.push(file);
+            }
+        });
+
+        return {tooBig: tooBig, tooSmall: tooSmall, valid: valid};
+	},
+
+	getLowerCaseExtension: function(filename) {
+        var extIdx = filename.lastIndexOf(".") + 1;
+
+        if (extIdx > 0) {
+            return filename.substr(extIdx, filename.length - extIdx).toLowerCase();
+        }
+    },
+
+    isImageSupportDataUri: function(filetype) {
+    	var imgtypes = ['image/gif','image/jpeg', 'image/png'];
+        return imgtypes.indexOf(filetype) != -1 ? true : false;
+    },
+
+    isVideo: function(filename) {
+        var videoTypes = ['video/mp4'];
+    },
+
+	getResultOfExtensionsValidation : function(files) {
+		var input = this;
+        if (input.extensions) {
+            var negate = input.extensions.charAt(0) === "!",
+                extensions = JSON.parse(input.extensions.toLowerCase().substr(negate ? 1 : 0)),
+                result = {invalid: [], valid: []};
+
+            files.forEach(function(file) {
+                var extension = input.getLowerCaseExtension(file.name);
+
+                if (extensions.indexOf(extension) >= 0) {
+                    result[negate ? "invalid" : "valid"].push(file);
+                }
+                else {
+                    result[negate? "valid" : "invalid"].push(file);
+                }
+            });
+
+            return result;
+        }
+
+        return {invalid: [], valid: files};
+    },
+
+    getResultOfCountLimitValidation : function(files) {
+        if (this.maxFiles > 0 && this.maxFiles < files.length) {
+            return {
+                invalid: files.slice(this.maxFiles, files.length),
+                valid: files.slice(0, this.maxFiles)
+            };
+        }
+
+        return {invalid: [], valid: files};
+    },
+
+    getImagePreview: function(files) {
+        var input = this;
+        var reader = [];
+
+        var imageExists = function(url, callback) {
+            var img = new Image();
+            img.onload = function() { callback(true); };
+            img.onerror = function() { callback(false); };
+            img.src = url;
+        };
+
+        for(var i = 0; i < input.files.length; i++) {
+            if(this.isImageSupportDataUri(input.files[i].type)) {
+                reader[i] = new FileReader();
+                reader[i].onload = function(e) {
+                    // var result = e.srcElement.result;
+                    var result = e.target.result;
+                    // console.log(result)
+
+                    imageExists(e.target.result,function(exists){
+                        if(exists) {
+                            input.fire('image-preview', {files:input.files, dataUri: result });
+                        }
+                        else {
+                            input.fire('image-preview-error', {files:input.files});
+                        }
+                    });    
+                };
+
+                reader[i].readAsDataURL(input.files[i]);
+            }
+            else {
+                console.log('File not supported!')
+            }
+        }
+    },
+
+	changeHandler: function(e, detail, sender) {
+		var input = this,
+			fileInput = this.$.fileInput,
+			files = Array.prototype.slice.call(fileInput.files),
+			invalid = {count: 0},
+			valid = [];
+		if (files.length) {
+            var extensionValidationResult = input.getResultOfExtensionsValidation(files);
+			var sizeValidationResult = input.getResultOfSizeValidation(extensionValidationResult.valid);
+            var countLimitValidationResult = input.getResultOfCountLimitValidation(extensionValidationResult.valid);
+
+            if (sizeValidationResult.tooBig.length) {
+                invalid.tooBig = sizeValidationResult.tooBig;
+                invalid.count += sizeValidationResult.tooBig.length;
+            }
+            if (sizeValidationResult.tooSmall.length) {
+                invalid.tooSmall = sizeValidationResult.tooSmall;
+                invalid.count += sizeValidationResult.tooSmall.length;
+            }
+            if (extensionValidationResult.invalid.length) {
+                invalid.badExtension = extensionValidationResult.invalid;
+                invalid.count += extensionValidationResult.invalid.length;
+            }
+            if (countLimitValidationResult.invalid.length) {
+                invalid.tooMany = countLimitValidationResult.invalid;
+                invalid.count += countLimitValidationResult.invalid.length;
+            }
+
+            valid = countLimitValidationResult.valid;
+
+            input.invalid = invalid;
+            input.files = valid;
+
+            if(invalid.count > 0) {
+                var errorFiles = {};
+
+                if(input.invalid.tooBig != undefined && input.invalid.tooBig.length) {
+                    errorFiles.tooBig = [];
+
+                    for(var i = 0; i < input.invalid.tooBig.length; i++) {
+                        errorFiles.tooBig.push(input.invalid.tooBig[i].name);
+                    }
+                }
+
+                if(input.invalid.tooSmall != undefined && input.invalid.tooSmall.length) {
+                    errorFiles.tooSmall = [];
+                    
+                    for(var i = 0; i < input.invalid.tooSmall.length; i++) {
+                        errorFiles.tooSmall.push(input.invalid.tooSmall[i].name);
+                    }
+                }
+
+                if(input.invalid.badExtension != undefined && input.invalid.badExtension.length) {
+                    errorFiles.badExtension = [];
+                    
+                    for(var i = 0; i < input.invalid.badExtension.length; i++) {
+                        errorFiles.badExtension.push(input.invalid.badExtension[i].name);
+                    }
+                }
+
+                if(input.invalid.tooMany != undefined && input.invalid.tooMany.length) {
+                    errorFiles.tooMany = [];
+                    
+                    for(var i = 0; i < input.invalid.tooMany.length; i++) {
+                        errorFiles.tooMany.push(input.invalid.tooMany[i].name);
+                    }
+                }
+
+                //console.log(errorFiles);
+                // for testing output
+                /*var node = document.createElement('div');
+                node.innerHTML = JSON.stringify(errorFiles);
+                Polymer.dom(document.querySelector('new-stykable .header .left .title')).appendChild(node);*/
+                var data = {error:errorFiles};    
+                if (files.length == 1 && typeof files[0] != "undefined" && typeof files[0].name != "undefined") {
+                    data.extension = this.getLowerCaseExtension(files[0].name);
+                    data.file = files[0];
+                }
+                input.fire('error',data);
+
+                if(valid.length > 0 && this.maxFiles > 1) {
+                    input.fire('start-upload',{files:input.files});
+                }
+                return;
+            }
+
+            if(this.imagePreview && input.files.length) {
+                this.getImagePreview();
+            }
+
+            this.setAutoUploadVar();
+
+            if(input.autoUpload) {
+                this.upload(input.files, true);
+            }
+            else {
+                // for testing output
+                /*var node = document.createElement('div');
+                node.innerHTML = JSON.stringify(input.files);
+                Polymer.dom(document.querySelector('new-stykable .header .left .title')).appendChild(node);*/
+
+                input.fire('start-upload',{files:input.files});
+            }
+		}	
+	},
+
+    upload : function(files, autoupload) {
+        var input = this,
+            fileInput = this.$.fileInput;
+
+        var formData = new FormData();
+
+        for(var i = 0; i < files.length; i++) {
+            formData.append(fileInput.name+"[]", files[i], files[i].name);
+        }
+        
+        // this.postparams = (new Function('return ' + this.postparams))();
+        if(this.postparams != undefined) {
+            for(var i in this.postparams) {
+                formData.append(i, this.postparams[i]);
+            }
+        }
+        
+        this.$.fileUpload.body = formData;
+        this.$.fileUpload.contentType = null;
+        // this.$.fileUpload.generateRequest();
+        this.async(function() {
+            this.$.fileUpload.generateRequest();
+        }, 100);
+
+
+
+
+        if(autoupload) {
+            input.fire('start-upload',{files:files});
+        }
+    },
+
+    _handleResponse: function (e, request) {
+        var input = this,
+            fileInput = this.$.fileInput,
+            resp = request.xhr.response;
+
+        this.response = resp;
+        this.fire('upload-response',{response:resp});
+    },
+
+    /*  
+     *  _handleErrorResponse : when ajax status code is not 200 or error page (404)
+     *
+     */
+    _handleErrorResponse: function(e, request) {
+        this.fire('upload-error',{request:request});
+    },
+
+    _onRequest : function(e, detail) {
+        /*var request = detail.request;
+        console.log('_onRequest');
+        var xhr = request.xhr
+
+        xhr.addEventListener('loadend', function (progress) {
+            
+        });*/
+    },
+
+    _onLoadingChanged: function(e, detail) {
+        var input = this,
+            fileInput = this.$.fileInput;
+        console.log('_onLoadingChanged');
+        this.fire('loading-changed',detail)
+    },
+
+    reset: function() {
+        // this.$.fileInput.type = "text";
+        this.$.fileInput.value = null;
+        // this.$.fileInput.type = "file";
+        try {
+            // this.$.fileInput.parentNode.replaceChild(this.cloneFileInput, this.$.fileInput);
+        } catch(e) {
+
+        }
+    }
+});
+</script>
